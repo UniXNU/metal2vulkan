@@ -343,15 +343,13 @@ impl ArgumentBufferLayout {
 
     /// Where argument `index` lands: in the last member whose indices hold it, inside a struct
     /// member's element as that element's layout says. `None` when no member holds it.
-    #[cfg(test)]
-    pub(crate) fn argument(&self, index: u32) -> Option<ArgumentPlace> {
+    pub fn argument(&self, index: u32) -> Option<ArgumentPlace> {
         self.place(index, 0)
     }
 
     /// [`argument`](Self::argument) for a layout whose byte 0 is at `base`. A struct element
     /// that does not hold the index leaves it to the members before; the recursion is as deep as
     /// the layout's struct nesting, which the build capped.
-    #[cfg(test)]
     fn place(&self, index: u32, base: u64) -> Option<ArgumentPlace> {
         self.members.iter().rev().find_map(|m| {
             let rel = index.checked_sub(m.id)?;
@@ -629,10 +627,9 @@ pub(crate) fn entry_layout(
 }
 
 /// Where one argument index lands ([`ArgumentBufferLayout::argument`]).
-#[cfg(test)]
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct ArgumentPlace {
+pub struct ArgumentPlace {
     pub ty: ArgumentType,
     /// Byte offset in the argument buffer.
     pub offset: u64,

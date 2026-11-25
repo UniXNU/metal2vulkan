@@ -36,6 +36,7 @@ struct State {
 
 pub(crate) enum Job {
     Free(Free),
+    PublishCache(std::sync::mpsc::SyncSender<bool>),
     /// A released texture's image, of its bytes, which an upload held past the texture: the
     /// release is looked at under the work lock, which the texture's drop may run under
     /// ([`Work::release`](crate::submit::Work::release)). Nothing where the image is gone.
@@ -143,7 +144,7 @@ impl Reaper {
         for job in jobs {
             match job {
                 Job::Free(object) => free(core, object),
-                Job::Released(..) | Job::Teardown(_) => {}
+                Job::Released(..) | Job::Teardown(_) | Job::PublishCache(_) => {}
             }
         }
     }
@@ -354,6 +355,12 @@ pub(crate) fn run(core: Arc<Core>) {
             }
         };
         match next {
+            Next::Job(Job::PublishCache(reply)) => {
+                while let Some((file, bytes)) = core.caches.next_write() {
+                    core.caches.write_kept(&file, &bytes, &core.counters);
+                }
+                let _ = reply.send(core.caches.publish(&core.device, &core.counters));
+            }
             Next::Job(Job::Free(object)) => free(&core, object),
             Next::Job(Job::Released(image, bytes)) => {
                 if let Some(image) = image.upgrade() {

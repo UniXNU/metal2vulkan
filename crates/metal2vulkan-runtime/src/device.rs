@@ -1015,6 +1015,32 @@ impl Device {
         self.shared.core.counters.clone()
     }
 
+    /// Flush queued shader records and persist the pipeline cache for a worker batch.
+    pub fn publish_pipeline_cache(&self) -> bool {
+        let core = &self.shared.core;
+        if role(core) != Role::None {
+            return false;
+        }
+        let (send, receive) = mpsc::sync_channel(1);
+        core.reaper.give(Job::PublishCache(send));
+        receive.recv_timeout(Duration::from_secs(15)).unwrap_or(false)
+    }
+
+    /// File name expected in a compatible external pipeline cache directory.
+    pub fn pipeline_cache_blob_name(&self) -> Option<String> {
+        self.shared.core.caches.header().map(|header| cache::blob_name(&header))
+    }
+
+    /// Merge a cache file with a matching driver header while no pipeline creation holds the cache.
+    pub fn merge_external_pipeline_cache(&self, framed_blob: &[u8]) -> bool {
+        let core = &self.shared.core;
+        let merged = core.caches.merge_external(&core.device, framed_blob);
+        if merged {
+            core.reaper.poke();
+        }
+        merged
+    }
+
     /// What lost the device: the Vulkan call and result of its first loss, a call of the
     /// runtime's or one the consumer reported ([`Device::report_loss`]), None while it is not
     /// lost. Metal's counterpart is the code and description of `MTLCommandBuffer.error`

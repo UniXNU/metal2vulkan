@@ -1744,6 +1744,53 @@ impl Caches {
         store.writable().then_some(path.as_path())
     }
 
+    /// On the reaper, publish the cache for a completed worker batch.
+    pub(crate) fn publish(&self, device: &ash::Device, counters: &Counters) -> bool {
+        let Some(path) = self.blob_to_write() else { return false };
+        let Some(alone) = self.alone() else { return false };
+        let Some(current) = lock(&self.pipelines).current.clone() else { return false };
+        let bound = self.bound.load(Relaxed);
+        // SAFETY: this cache belongs to device and is exclusive under alone.
+        if unsafe { data_size(device, current.0) } > bound {
+            return false;
+        }
+        // SAFETY: this cache belongs to device, and no creation holds it under alone.
+        let Ok(data) = (unsafe { device.get_pipeline_cache_data(current.0) }) else { return false };
+        drop(alone);
+        let size = data.len() as u64;
+        if size > bound || write_whole(path, &[&frame(&data), &data]).is_err() {
+            return false;
+        }
+        counters.cache_written(24 + size);
+        lock(&self.pipelines).written = size;
+        true
+    }
+
+    /// Merge a framed blob from the consumer's qualified, read-only cache layer.
+    pub(crate) fn merge_external(&self, device: &ash::Device, file: &[u8]) -> bool {
+        let Some(header) = self.header.get() else { return false };
+        if file.len() as u64 > self.bound.load(Relaxed).saturating_add(24) {
+            return false;
+        }
+        let Some(data) = unframe(file).filter(|data| data.starts_with(header)) else { return false };
+        // SAFETY: the frame and device header match this driver.
+        let Some(source) = (unsafe { make_cache(device, data) }) else { return false };
+        let merged = self.alone().is_some_and(|_alone| {
+            let pipelines = lock(&self.pipelines);
+            !pipelines.seeding && pipelines.current.as_ref().is_some_and(|current| {
+                // SAFETY: both caches belong to this device and no creation holds them.
+                unsafe { device.merge_pipeline_caches(current.0, &[source]) }.is_ok()
+            })
+        });
+        // SAFETY: the merge is synchronous and no other thread can take source.
+        unsafe { device.destroy_pipeline_cache(source, None) };
+        if merged {
+            self.created.store(host_time(), Relaxed);
+            self.grown.store(true, SeqCst);
+        }
+        merged
+    }
+
     /// Writes `data`, the cache's data the driver gave at size `size`, over the device's blob at
     /// `path`, where it is within the bound; past it, the write is skipped and counted.
     fn write(&self, path: &Path, data: &[u8], size: u64, counters: &Counters) {
